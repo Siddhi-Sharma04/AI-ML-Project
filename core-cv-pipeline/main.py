@@ -1,4 +1,4 @@
-import cv2
+import cv2     # changes made in palak-work
 import os
 import time
 import numpy as np
