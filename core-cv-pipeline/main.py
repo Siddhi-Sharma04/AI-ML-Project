@@ -4,8 +4,7 @@ import time
 import numpy as np
 import re
 from collections import Counter
-# Internal tracking dependencies ke theek neeche jodhein
-from modules.violations.overspeeding import process_speed_trap
+
 # Safe absolute path generation logic
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -176,7 +175,6 @@ while True:
                     continue
                     
                 class_label = CLASS_NAMES[class_id]
-                
                 current_frame_track_ids.add(track_id)
                 center_y = int((y1 + y2) / 2)
                 
@@ -184,38 +182,45 @@ while True:
                     np.random.seed(track_id)
                     persistent_speeds[track_id] = np.random.randint(35, 52) if class_label == 'Car' else np.random.randint(25, 45)
 
-               # 1. SPEED TRAP CALCULATION (Sirf tabhi chalega jab object Person NA HO)
-                if class_label != 'Person':
-                    current_speed = process_speed_trap(
-                        track_id=track_id,
-                        center_y=center_y,
-                        frame_count=frame_count,
-                        class_label=class_label,
-                        box_coords=(x1, y1, x2, y2),
-                        LINE_A_Y=LINE_A_Y,
-                        LINE_B_Y=LINE_B_Y,
-                        SPEED_LIMIT=SPEED_LIMIT,
-                        MAX_REALISTIC_SPEED=MAX_REALISTIC_SPEED,
-                        speed_timers=speed_timers,
-                        active_violations=active_violations,
-                        triggered_violators=triggered_violators,
-                        persistent_speeds=persistent_speeds
-                    )
-                else:
-                    current_speed = None  # Person ke liye speed null rakhein
+                # SPEED TRAP CALCULATION
+                if LINE_A_Y <= center_y < LINE_B_Y:
+                    if track_id not in speed_timers:
+                        speed_timers[track_id] = frame_count
+                        if track_id not in active_violations:
+                            active_violations[track_id] = {
+                                "speed": persistent_speeds[track_id],
+                                "box_coords": (x1, y1, x2, y2)
+                            }
+                elif center_y >= LINE_B_Y:
+                    if track_id in speed_timers and track_id not in triggered_violators:
+                        start_frame = speed_timers[track_id]
+                        total_frames = frame_count - start_frame
+                        
+                        if total_frames > 12: 
+                            time_taken = total_frames / 30.0  
+                            ROAD_DISTANCE = 12.0  
+                            speed_mps = ROAD_DISTANCE / time_taken
+                            calculated_speed = int(speed_mps * 3.6)
+                            
+                            speed_kmh = calculated_speed if calculated_speed < MAX_REALISTIC_SPEED else persistent_speeds[track_id]
+                            
+                            if speed_kmh > SPEED_LIMIT:
+                                triggered_violators.add(track_id)
+                                if track_id in active_violations:
+                                    active_violations[track_id]["speed"] = speed_kmh
+                                print(f"[VIOLATION ALERT] {class_label} ID {track_id} OVERSPEEDING at {speed_kmh} km/h!")
+                            else:
+                                if track_id in active_violations:
+                                    active_violations[track_id]["speed"] = speed_kmh
 
-                # 2. UI LABEL LOGIC (Clean & Separated)
-                if class_label == 'Person':
-                    box_color = (0, 255, 0)  # Green box for normal person detection
-                    label_text = f"{class_label} #{track_id}"  # No speed text!
-                elif track_id in triggered_violators:
-                    box_color = (0, 0, 255)  # Red for overspeeding vehicles
+                current_speed = active_violations.get(track_id, {}).get("speed", persistent_speeds[track_id])
+                if track_id in triggered_violators:
+                    box_color = (0, 0, 255)  
                     label_text = f"{class_label} #{track_id} | {current_speed} km/h (OVERSPEED)"
                 else:
-                    box_color = (0, 255, 0)  # Green for normal vehicles
+                    box_color = (0, 255, 0)  
                     label_text = f"{class_label} #{track_id} | {current_speed} km/h"
 
-                # 3. Drawing Boxes and Labels
                 cv2.rectangle(combined_frame, (x1, y1), (x2, y2), box_color, 2)
                 cv2.putText(combined_frame, label_text, (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 2)
