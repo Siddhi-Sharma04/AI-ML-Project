@@ -1,12 +1,15 @@
 import cv2
+import os
 from ultralytics import YOLO
 
 class PlateDetector:
-    def __init__(self, model_path="weights/license_plate_detector.pt"):
+    def __init__(self, model_path):
         """
         License Plate Bounding Box Localization Class.
-        license_plate_detector.pt model ko load karti hai.
         """
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"[CRITICAL ERROR] License Plate Model file not found at: {model_path}")
+            
         print(f"[INFO] Loading License Plate Detector Model from: {model_path}")
         self.model = YOLO(model_path)
         
