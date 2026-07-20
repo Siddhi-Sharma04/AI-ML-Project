@@ -12,14 +12,14 @@ class OCRReader:
         
     def read_text(self, plate_crop):
         """
-        Cropped plate image string text data extract karega.
+        Cropped plate image string text and confidence score data extract karega.
         """
         if plate_crop is None or plate_crop.size == 0:
-            return ""
+            return "", 0.0
             
         results = self.reader.readtext(plate_crop)
         if len(results) > 0:
-            # Sabse highest confidence score wala text return karein
+            # Sabse highest confidence score wala text aur confidence return karein
             # EasyOCR format: [([x,y arrays], text, confidence)]
-            return results[0][1]
-        return ""
+            return results[0][1], results[0][2]
+        return "", 0.0

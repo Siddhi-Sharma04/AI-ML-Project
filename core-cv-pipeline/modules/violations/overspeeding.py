@@ -12,7 +12,7 @@ def process_speed_trap(
     # 1. Agar vehicle Line A aur Line B ke beech me hai
     if LINE_A_Y <= center_y < LINE_B_Y:
         if track_id not in speed_timers:
-            speed_timers[track_id] = frame_count
+            speed_timers[track_id] = (frame_count, center_y)
             if track_id not in active_violations:
                 active_violations[track_id] = {
                     "speed": persistent_speeds[track_id],
@@ -21,26 +21,36 @@ def process_speed_trap(
                 
     # 2. Agar vehicle Line B ko cross kar gaya hai
     elif center_y >= LINE_B_Y:
-        if track_id in speed_timers and track_id not in triggered_violators:
-            start_frame = speed_timers[track_id]
+        if track_id in speed_timers:
+            start_frame, start_y = speed_timers[track_id]
             total_frames = frame_count - start_frame
+            dy = center_y - start_y
             
-            if total_frames > 12: 
+            # Ensure enough frames have passed and vehicle moved downwards
+            if total_frames > 5 and dy > 10: 
                 time_taken = total_frames / 30.0  
-                ROAD_DISTANCE = 12.0  
+                # Scale: 12.0 meters / (LINE_B_Y - LINE_A_Y) pixels
+                scale = 12.0 / max(1, (LINE_B_Y - LINE_A_Y))
+                ROAD_DISTANCE = dy * scale  
                 speed_mps = ROAD_DISTANCE / time_taken
                 calculated_speed = int(speed_mps * 3.6)
                 
                 speed_kmh = calculated_speed if calculated_speed < MAX_REALISTIC_SPEED else persistent_speeds[track_id]
                 
+                if track_id not in active_violations:
+                    active_violations[track_id] = {
+                        "box_coords": box_coords
+                    }
+                active_violations[track_id]["speed"] = speed_kmh
+                active_violations[track_id]["box_coords"] = box_coords
+                
                 if speed_kmh > SPEED_LIMIT:
                     triggered_violators.add(track_id)
-                    if track_id in active_violations:
-                        active_violations[track_id]["speed"] = speed_kmh
-                    print(f"[VIOLATION ALERT] {class_label} ID {track_id} OVERSPEEDING at {speed_kmh} km/h!")
                 else:
-                    if track_id in active_violations:
-                        active_violations[track_id]["speed"] = speed_kmh
+                    triggered_violators.discard(track_id)
+                
+                # Delete from speed_timers to prevent recalculation
+                del speed_timers[track_id]
 
     # Return current speed taaki UI variables properly set ho sakein
     return active_violations.get(track_id, {}).get("speed", persistent_speeds[track_id])
