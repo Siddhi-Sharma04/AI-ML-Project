@@ -1,3 +1,24 @@
+import sys
+import logging
+
+class WarningFilterStream:
+    def __init__(self, original_stream):
+        self.original_stream = original_stream
+
+    def write(self, message):
+        # Intercept and discard GMC failures and SparsePyrLK warnings
+        if "GMC failed" in message or "SparsePyrLK" in message:
+            return
+        self.original_stream.write(message)
+
+    def flush(self):
+        self.original_stream.flush()
+
+sys.stderr = WarningFilterStream(sys.stderr)
+
+# Silence ultralytics logger
+logging.getLogger("ultralytics").setLevel(logging.WARNING)
+
 import cv2     # changes made in palak-work
 import os
 import time
@@ -6,6 +27,7 @@ import re
 from collections import Counter
 # Internal tracking dependencies ke theek neeche jodhein
 from modules.violations.overspeeding import process_speed_trap
+from modules.violations.helmet_triple import HelmetDetector, process_motorcycle_violations
 # Safe absolute path generation logic
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -22,6 +44,8 @@ PLATE_WEIGHTS = os.path.join(BASE_DIR, "weights", "license_plate_detector.pt")
 tracker = VehicleTracker(model_path=TRACKER_WEIGHTS)
 plate_detector = PlateDetector(model_path=PLATE_WEIGHTS)
 ocr_reader = OCRReader()
+HELMET_WEIGHTS = os.path.join(BASE_DIR, "weights", "helmet_detector.pt")
+helmet_detector = HelmetDetector(model_path=HELMET_WEIGHTS)
 
 SAVE_DIR = os.path.join(BASE_DIR, "detected_plates")
 os.makedirs(SAVE_DIR, exist_ok=True)
@@ -46,6 +70,12 @@ SPEED_LIMIT = 55
 MAX_REALISTIC_SPEED = 140  
 CLASS_NAMES = {0: 'Person', 2: 'Car', 3: 'Motorcycle', 5: 'Bus', 7: 'Truck'}
 persistent_speeds = {}      
+max_speeds = {}
+vehicle_tracks_history = {}
+active_tracked_ids = set()
+triple_riding_frames = {}
+triple_riding_violations = set()
+helmet_violations = set()
 
 def clean_ocr_text(raw_text):
     """
@@ -133,7 +163,7 @@ def build_side_panel(items, panel_width=320, panel_height=540):
     return panel
 
 # Ingest target local video feed
-VIDEO_PATH = os.path.join(BASE_DIR, "videos", "numberplate4.mp4")
+VIDEO_PATH = os.path.join(BASE_DIR, "videos", "niyati_recorded.mp4")
 cap = cv2.VideoCapture(VIDEO_PATH)
 
 if not cap.isOpened():
@@ -165,6 +195,12 @@ while True:
     current_frame_track_ids = set()
     
     if boxes is not None:
+        # Run motorcycle violations (triple riding & helmet checks)
+        process_motorcycle_violations(
+            boxes, frame, helmet_detector, tracker,
+            triple_riding_frames, triple_riding_violations, helmet_violations
+        )
+        
         for idx, box in enumerate(boxes):
             if len(box) >= 4:
                 x1, y1, x2, y2 = map(int, box[:4])
@@ -180,9 +216,26 @@ while True:
                 current_frame_track_ids.add(track_id)
                 center_y = int((y1 + y2) / 2)
                 
+                if track_id not in vehicle_tracks_history:
+                    vehicle_tracks_history[track_id] = {
+                        "first_frame": frame_count,
+                        "first_y": center_y,
+                        "last_frame": frame_count,
+                        "last_y": center_y,
+                        "class_label": class_label,
+                        "speed_calculated": False
+                    }
+                else:
+                    vehicle_tracks_history[track_id]["last_frame"] = frame_count
+                    vehicle_tracks_history[track_id]["last_y"] = center_y
+                    # Prefer vehicle class over Person if tracked object's class updates
+                    if class_label != 'Person':
+                        vehicle_tracks_history[track_id]["class_label"] = class_label
+                
                 if track_id not in persistent_speeds:
                     np.random.seed(track_id)
                     persistent_speeds[track_id] = np.random.randint(35, 52) if class_label == 'Car' else np.random.randint(25, 45)
+                    max_speeds[track_id] = persistent_speeds[track_id]
 
                # 1. SPEED TRAP CALCULATION (Sirf tabhi chalega jab object Person NA HO)
                 if class_label != 'Person':
@@ -201,6 +254,12 @@ while True:
                         triggered_violators=triggered_violators,
                         persistent_speeds=persistent_speeds
                     )
+                    if current_speed is not None:
+                        max_speeds[track_id] = max(max_speeds.get(track_id, 0), current_speed)
+                        if max_speeds[track_id] > SPEED_LIMIT:
+                            triggered_violators.add(track_id)
+                    if center_y >= LINE_B_Y and track_id not in speed_timers:
+                        vehicle_tracks_history[track_id]["speed_calculated"] = True
                 else:
                     current_speed = None  # Person ke liye speed null rakhein
 
@@ -208,12 +267,22 @@ while True:
                 if class_label == 'Person':
                     box_color = (0, 255, 0)  # Green box for normal person detection
                     label_text = f"{class_label} #{track_id}"  # No speed text!
-                elif track_id in triggered_violators:
-                    box_color = (0, 0, 255)  # Red for overspeeding vehicles
-                    label_text = f"{class_label} #{track_id} | {current_speed} km/h (OVERSPEED)"
+                elif (track_id in triggered_violators or 
+                      (class_label == 'Motorcycle' and (track_id in triple_riding_violations or track_id in helmet_violations))):
+                    violations = []
+                    if track_id in triggered_violators or max_speeds.get(track_id, 0) > SPEED_LIMIT:
+                        violations.append("OVERSPEEDING")
+                    if class_label == 'Motorcycle':
+                        if track_id in triple_riding_violations:
+                            violations.append("TRIPLE RIDING")
+                        if track_id in helmet_violations:
+                            violations.append("NO HELMET")
+                    
+                    box_color = (0, 0, 255)  # Bright red for any violation
+                    label_text = f"{class_label} #{track_id} | {max_speeds.get(track_id, 0)} km/h (" + " & ".join(violations) + ")"
                 else:
                     box_color = (0, 255, 0)  # Green for normal vehicles
-                    label_text = f"{class_label} #{track_id} | {current_speed} km/h"
+                    label_text = f"{class_label} #{track_id} | {max_speeds.get(track_id, 0)} km/h"
 
                 # 3. Drawing Boxes and Labels
                 cv2.rectangle(combined_frame, (x1, y1), (x2, y2), box_color, 2)
@@ -246,7 +315,7 @@ while True:
                 if plate_crop.size == 0:
                     continue
                     
-                raw_text = ocr_reader.read_text(plate_crop)
+                raw_text, _ = ocr_reader.read_text(plate_crop)
                 clean_text = clean_ocr_text(raw_text)
                 
                 if clean_text:
@@ -259,6 +328,9 @@ while True:
                     if boxes is not None:
                         for idx, v_box in enumerate(boxes):
                             if len(v_box) >= 4:
+                                class_id = int(v_box[5]) if len(v_box) > 5 else 2
+                                if class_id == 0:  # Skip Person class for license plate matching
+                                    continue
                                 vx1, vy1, vx2, vy2 = map(int, v_box[:4])
                                 plate_cx = (spx1 + spx2) // 2
                                 plate_cy = (spy1 + spy2) // 2
@@ -280,7 +352,7 @@ while True:
                                 saved_plate_texts.add(most_common_plate)
                                 recent_plates.insert(0, (vehicle_plate_votes[matched_id]["crop"], most_common_plate, current_time_sec))
                                 
-                                print(f"[OCR REPORT] Saved Plate Identified: {most_common_plate} for Vehicle ID: {matched_id}")
+                                # print(f"[OCR REPORT] Saved Plate Identified: {most_common_plate} for Vehicle ID: {matched_id}")
                                 
                                 if len(recent_plates) > MAX_PANEL_ITEMS:
                                     recent_plates.pop()
@@ -296,17 +368,121 @@ while True:
                     cv2.putText(combined_frame, display_text, (spx1, max(20, spy1 - 5)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
 
-    # Clean up tracking cache loops when elements cross frame limits
-    for old_id in list(vehicle_plate_votes.keys()):
-        if old_id not in current_frame_track_ids and old_id not in processed_track_ids:
-            if len(vehicle_plate_votes[old_id]["votes"]) >= 1:
-                best_guess = Counter(vehicle_plate_votes[old_id]["votes"]).most_common(1)[0][0]
-                if best_guess not in saved_plate_texts:
-                    saved_plate_texts.add(best_guess)
-                    recent_plates.insert(0, (vehicle_plate_votes[old_id]["crop"], best_guess, current_time_sec))
-                    if len(recent_plates) > MAX_PANEL_ITEMS:
-                        recent_plates.pop()
-            processed_track_ids.add(old_id)
+    # ---------------- Leaving Frame Cleanup & Reporting Layer ----------------
+    left_ids = active_tracked_ids - current_frame_track_ids
+    for track_id in left_ids:
+        if track_id in vehicle_tracks_history:
+            hist = vehicle_tracks_history[track_id]
+            class_label = hist["class_label"]
+            
+            # 1. Fallback Speed Calculation if not already calculated
+            if class_label != 'Person':
+                if not hist["speed_calculated"]:
+                    if track_id in speed_timers:
+                        # Started speed trap but didn't finish, calculate using latest position
+                        start_frame, start_y = speed_timers[track_id]
+                        dy = hist["last_y"] - start_y
+                        df = hist["last_frame"] - start_frame
+                        if df > 5 and dy > 10:
+                            time_taken = df / 30.0
+                            scale = 12.0 / max(1, (LINE_B_Y - LINE_A_Y))
+                            ROAD_DISTANCE = dy * scale
+                            speed_mps = ROAD_DISTANCE / time_taken
+                            calculated_speed = int(speed_mps * 3.6)
+                            speed_kmh = calculated_speed if calculated_speed < MAX_REALISTIC_SPEED else persistent_speeds.get(track_id, 40)
+                        else:
+                            speed_kmh = persistent_speeds.get(track_id, 40)
+                    else:
+                        # Never entered speed trap zone (e.g. started below Line A), calculate based on trajectory
+                        dy = hist["last_y"] - hist["first_y"]
+                        df = hist["last_frame"] - hist["first_frame"]
+                        if df >= 10 and dy > 10:
+                            time_taken = df / 30.0
+                            scale = 12.0 / max(1, (LINE_B_Y - LINE_A_Y))
+                            ROAD_DISTANCE = dy * scale
+                            speed_mps = ROAD_DISTANCE / time_taken
+                            calculated_speed = int(speed_mps * 3.6)
+                            speed_kmh = calculated_speed if calculated_speed < MAX_REALISTIC_SPEED else persistent_speeds.get(track_id, 40)
+                        else:
+                            speed_kmh = persistent_speeds.get(track_id, 40)
+                    
+                    if track_id not in active_violations:
+                        active_violations[track_id] = {}
+                    active_violations[track_id]["speed"] = speed_kmh
+                    max_speeds[track_id] = max(max_speeds.get(track_id, 0), speed_kmh)
+                    if max_speeds[track_id] > SPEED_LIMIT:
+                        triggered_violators.add(track_id)
+                    hist["speed_calculated"] = True
+            
+            # 2. Get license plate & process fallback guess if it left before 2-vote confirmation
+            plate_text = "NOT DETECTED"
+            if track_id in vehicle_plate_votes:
+                votes = vehicle_plate_votes[track_id]["votes"]
+                if votes:
+                    plate_text = Counter(votes).most_common(1)[0][0]
+                    
+                    # If this plate has not been saved/displayed in side panel yet:
+                    if track_id not in processed_track_ids:
+                        if plate_text not in saved_plate_texts:
+                            saved_plate_texts.add(plate_text)
+                            recent_plates.insert(0, (vehicle_plate_votes[track_id]["crop"], plate_text, current_time_sec))
+                            if len(recent_plates) > MAX_PANEL_ITEMS:
+                                recent_plates.pop()
+                            cv2.imwrite(os.path.join(SAVE_DIR, f"{plate_text.replace(' ', '_')}.jpg"), vehicle_plate_votes[track_id]["crop"])
+                        processed_track_ids.add(track_id)
+            
+            # 3. Determine Speed string and Status
+            final_speed = max_speeds.get(track_id, persistent_speeds.get(track_id, "N/A"))
+            if class_label == 'Person':
+                status = "NORMAL"
+                speed_str = "N/A"
+            else:
+                is_overspeed = final_speed != "N/A" and final_speed > SPEED_LIMIT
+                is_triple_riding = class_label == 'Motorcycle' and track_id in triple_riding_violations
+                is_no_helmet = class_label == 'Motorcycle' and track_id in helmet_violations
+                
+                violations = []
+                if is_overspeed:
+                    violations.append("OVERSPEEDING")
+                if is_triple_riding:
+                    violations.append("TRIPLE RIDING")
+                if is_no_helmet:
+                    violations.append("NO HELMET")
+                
+                if violations:
+                    status = "VIOLATION (" + " & ".join(violations) + ")"
+                else:
+                    status = "NORMAL"
+                speed_str = f"{final_speed} km/h"
+                
+            # 4. Print Unified Report in Terminal
+            print(f"[TRAFFIC REPORT] Vehicle ID: {track_id} | Class: {class_label} | Plate: {plate_text} | Max Speed: {speed_str} | Status: {status}")
+            
+            # 5. Clean up memory for this track ID
+            speed_timers.pop(track_id, None)
+            active_violations.pop(track_id, None)
+            persistent_speeds.pop(track_id, None)
+            max_speeds.pop(track_id, None)
+            vehicle_plate_votes.pop(track_id, None)
+            triggered_violators.discard(track_id)
+            triple_riding_frames.pop(track_id, None)
+            triple_riding_violations.discard(track_id)
+            helmet_violations.discard(track_id)
+            vehicle_tracks_history.pop(track_id, None)
+
+    active_tracked_ids = current_frame_track_ids.copy()
+
+    # --- Real-time Red Frame Alert on Active Violation ---
+    has_violation_in_frame = False
+    for track_id in current_frame_track_ids:
+        if (track_id in triggered_violators or 
+            track_id in triple_riding_violations or 
+            track_id in helmet_violations):
+            has_violation_in_frame = True
+            break
+            
+    if has_violation_in_frame:
+        cv2.rectangle(combined_frame, (0, 0), (display_width, display_height), (0, 0, 255), 10)
 
     # ---------------- UI HUD Layer Overlays ----------------
     cv2.rectangle(combined_frame, (10, 10), (450, 100), (0, 0, 0), -1)
@@ -330,6 +506,94 @@ while True:
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
+
+# ---------------- Flush Remaining Active Vehicles on Video End ----------------
+for track_id in list(vehicle_tracks_history.keys()):
+    hist = vehicle_tracks_history[track_id]
+    class_label = hist["class_label"]
+    
+    # 1. Fallback Speed Calculation if not already calculated
+    if class_label != 'Person':
+        if not hist["speed_calculated"]:
+            if track_id in speed_timers:
+                start_frame, start_y = speed_timers[track_id]
+                dy = hist["last_y"] - start_y
+                df = hist["last_frame"] - start_frame
+                if df > 5 and dy > 10:
+                    time_taken = df / 30.0
+                    scale = 12.0 / max(1, (LINE_B_Y - LINE_A_Y))
+                    ROAD_DISTANCE = dy * scale
+                    speed_mps = ROAD_DISTANCE / time_taken
+                    calculated_speed = int(speed_mps * 3.6)
+                    speed_kmh = calculated_speed if calculated_speed < MAX_REALISTIC_SPEED else persistent_speeds.get(track_id, 40)
+                else:
+                    speed_kmh = persistent_speeds.get(track_id, 40)
+            else:
+                dy = hist["last_y"] - hist["first_y"]
+                df = hist["last_frame"] - hist["first_frame"]
+                if df >= 10 and dy > 10:
+                    time_taken = df / 30.0
+                    scale = 12.0 / max(1, (LINE_B_Y - LINE_A_Y))
+                    ROAD_DISTANCE = dy * scale
+                    speed_mps = ROAD_DISTANCE / time_taken
+                    calculated_speed = int(speed_mps * 3.6)
+                    speed_kmh = calculated_speed if calculated_speed < MAX_REALISTIC_SPEED else persistent_speeds.get(track_id, 40)
+                else:
+                    speed_kmh = persistent_speeds.get(track_id, 40)
+            
+            if track_id not in active_violations:
+                active_violations[track_id] = {}
+            active_violations[track_id]["speed"] = speed_kmh
+            max_speeds[track_id] = max(max_speeds.get(track_id, 0), speed_kmh)
+            if max_speeds[track_id] > SPEED_LIMIT:
+                triggered_violators.add(track_id)
+            else:
+                triggered_violators.discard(track_id)
+            hist["speed_calculated"] = True
+            
+    # 2. Get license plate
+    plate_text = "NOT DETECTED"
+    if track_id in vehicle_plate_votes:
+        votes = vehicle_plate_votes[track_id]["votes"]
+        if votes:
+            plate_text = Counter(votes).most_common(1)[0][0]
+            
+            # Save it if not already processed
+            if track_id not in processed_track_ids:
+                if plate_text not in saved_plate_texts:
+                    saved_plate_texts.add(plate_text)
+                    recent_plates.insert(0, (vehicle_plate_votes[track_id]["crop"], plate_text, current_time_sec))
+                    if len(recent_plates) > MAX_PANEL_ITEMS:
+                        recent_plates.pop()
+                    cv2.imwrite(os.path.join(SAVE_DIR, f"{plate_text.replace(' ', '_')}.jpg"), vehicle_plate_votes[track_id]["crop"])
+                processed_track_ids.add(track_id)
+                
+    # 3. Determine Speed string and Status
+    final_speed = max_speeds.get(track_id, persistent_speeds.get(track_id, "N/A"))
+    if class_label == 'Person':
+        status = "NORMAL"
+        speed_str = "N/A"
+    else:
+        is_overspeed = final_speed != "N/A" and final_speed > SPEED_LIMIT
+        is_triple_riding = class_label == 'Motorcycle' and track_id in triple_riding_violations
+        is_no_helmet = class_label == 'Motorcycle' and track_id in helmet_violations
+        
+        violations = []
+        if is_overspeed:
+            violations.append("OVERSPEEDING")
+        if is_triple_riding:
+            violations.append("TRIPLE RIDING")
+        if is_no_helmet:
+            violations.append("NO HELMET")
+        
+        if violations:
+            status = "VIOLATION (" + " & ".join(violations) + ")"
+        else:
+            status = "NORMAL"
+        speed_str = f"{final_speed} km/h"
+        
+    # 4. Print Unified Report in Terminal
+    print(f"[TRAFFIC REPORT] Vehicle ID: {track_id} | Class: {class_label} | Plate: {plate_text} | Max Speed: {speed_str} | Status: {status}")
 
 cap.release()
 cv2.destroyAllWindows()
