@@ -1,0 +1,16 @@
+{
+  "zones": [
+    {
+      "zone_id": "lane_down",
+      "polygon": [[0, 0], [960, 0], [960, 540], [0, 540]],
+      "expected_direction": "down"
+    },
+    {
+      "zone_id": "zebra_1",
+      "type": "zebra_crossing",
+      "polygon": [[100, 420], [860, 420], [960, 520], [0, 520]],
+      "mode": "both",
+      "dwell_threshold_seconds": 12.0
+    }
+  ]
+}

@@ -13,10 +13,10 @@ class PlateDetector:
         print(f"[INFO] Loading License Plate Detector Model from: {model_path}")
         self.model = YOLO(model_path)
         
-    def detect_plates(self, vehicle_crop):
+    def detect_plates(self, vehicle_crop, conf=0.15):
         """
         Vehicle crop image lekar number plate coordinates segment karega.
         """
-        results = self.model(vehicle_crop, verbose=False)[0]
+        results = self.model(vehicle_crop, conf=conf, verbose=False)[0]
         plate_boxes = results.boxes.data.cpu().numpy()
         return plate_boxes

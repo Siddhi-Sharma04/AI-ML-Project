@@ -67,6 +67,39 @@ def process_motorcycle_violations(
     except Exception as e:
         print(f"[ERROR] Base person detection failure: {e}")
 
+    # Greedy overlap suppression (NMS) to eliminate duplicate/noisy person boxes
+    filtered_persons = []
+    for p in persons:
+        spx1, spy1, spx2, spy2 = p[0], p[1], p[2], p[3]
+        duplicate = False
+        for fp in filtered_persons:
+            f_spx1, f_spy1, f_spx2, f_spy2 = fp[0], fp[1], fp[2], fp[3]
+            
+            # Intersection coordinates
+            ix1 = max(spx1, f_spx1)
+            iy1 = max(spy1, f_spy1)
+            ix2 = min(spx2, f_spx2)
+            iy2 = min(spy2, f_spy2)
+            
+            iw = max(0, ix2 - ix1)
+            ih = max(0, iy2 - iy1)
+            intersection = iw * ih
+            
+            area_p = (spx2 - spx1) * (spy2 - spy1)
+            area_fp = (f_spx2 - f_spx1) * (f_spy2 - f_spy1)
+            
+            union = area_p + area_fp - intersection
+            iou = intersection / union if union > 0 else 0
+            iomin = intersection / min(area_p, area_fp) if min(area_p, area_fp) > 0 else 0
+            
+            # If boxes are highly overlapping, suppress the lower-confidence one
+            if iou > 0.60 or iomin > 0.80:
+                duplicate = True
+                break
+        if not duplicate:
+            filtered_persons.append(p)
+    persons = filtered_persons
+
     # Process violations for each motorcycle
     for mx1, my1, mx2, my2, m_id in motorcycles:
         if m_id is None:
