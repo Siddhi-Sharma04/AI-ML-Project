@@ -1,1 +1,36 @@
-﻿__pycache__/
+# --- Python and virtual environment caches ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+venv/
+.venv/
+env/
+.env
+
+# --- Local Databases ---
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Computer Vision Outputs & Serve Media ---
+core-cv-pipeline/challans_output/
+backend-api/media/
+backend-api/media/uploads/
+test_challans_output/
+
+# --- Frontend Node & Build dependencies ---
+dashboard-frontend/node_modules/
+dashboard-frontend/dist/
+dashboard-frontend/local.properties
+
+# --- Log files ---
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- OS Specific Files ---
+.DS_Store
+Thumbs.db
