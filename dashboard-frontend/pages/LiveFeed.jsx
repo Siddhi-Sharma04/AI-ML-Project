@@ -3,6 +3,9 @@ import { AlertCircle, ShieldAlert, Cpu, Video, CheckCircle2, IndianRupee, Eye } 
 import MetricsCard from "../components/MetricsCard";
 
 export default function LiveFeed({ challans, backendStatus }) {
+  // State to track if a live video stream/camera feed is connected
+  const [isLiveConnected, setIsLiveConnected] = useState(false);
+
   // State for metrics
   const [metrics, setMetrics] = useState({
     violationsToday: 142,
@@ -12,32 +15,7 @@ export default function LiveFeed({ challans, backendStatus }) {
   });
 
   // Local ticker for live alerts simulation
-  const [liveDetections, setLiveDetections] = useState([
-    {
-      id: "det-1",
-      plate: "RJ 14 AB 1234",
-      violation: "No Helmet",
-      time: "21:51:12",
-      vehicle: "Motorcycle",
-      confidence: 0.94,
-    },
-    {
-      id: "det-2",
-      plate: "MH 12 CD 5678",
-      violation: "Overspeeding",
-      time: "21:49:05",
-      vehicle: "Car",
-      confidence: 0.89,
-    },
-    {
-      id: "det-3",
-      plate: "DL 3C A 5555",
-      violation: "Zebra Obstruction",
-      time: "21:45:22",
-      vehicle: "SUV",
-      confidence: 0.92,
-    }
-  ]);
+  const [liveDetections, setLiveDetections] = useState([]);
 
   const [streamStats, setStreamStats] = useState({
     fps: 29.8,
@@ -113,22 +91,21 @@ export default function LiveFeed({ challans, backendStatus }) {
       ctx.fillStyle = "#000";
       ctx.fillText(car2.label, car2.x + 5, car2.y - 5);
 
-      // Move and draw box 3 (Violator)
+      // Move and draw box 3 (bike)
       bike.x += bike.speedX;
-      if (bike.x > canvas.width) {
-        bike.x = -bike.w;
-      }
+      if (bike.x > canvas.width) bike.x = -bike.w;
       ctx.strokeStyle = "#EF4444";
       ctx.lineWidth = 2;
       ctx.strokeRect(bike.x, bike.y, bike.w, bike.h);
       ctx.fillStyle = "#EF4444";
       ctx.fillRect(bike.x, bike.y - 18, bike.w, 18);
       ctx.fillStyle = "#fff";
+      ctx.font = "bold 10px Inter";
       ctx.fillText(bike.label, bike.x + 5, bike.y - 5);
-
+      
       animationId = requestAnimationFrame(draw);
     };
-
+    
     draw();
     return () => cancelAnimationFrame(animationId);
   }, []);
@@ -138,9 +115,9 @@ export default function LiveFeed({ challans, backendStatus }) {
     const interval = setInterval(() => {
       // Pick random details
       const plates = ["KA 03 MM 9999", "RJ 14 AB 1234", "MH 12 CD 5678", "DL 3C A 5555", "UP 16 FG 4321"];
-      const violations = ["No Helmet", "Overspeeding", "Wrong Way", "Zebra Obstruction"];
+      const violations = ["No Helmet", "Overspeeding", "Wrong Way"];
       const vehicles = ["Motorcycle", "Car", "SUV", "Truck", "Motorcycle"];
-      const fines = [1000, 2000, 2000, 500];
+      const fines = [1000, 2000, 2000];
 
       const randPlate = plates[Math.floor(Math.random() * plates.length)];
       const vIndex = Math.floor(Math.random() * violations.length);
@@ -152,9 +129,9 @@ export default function LiveFeed({ challans, backendStatus }) {
         id: `det-${Date.now()}`,
         plate: randPlate,
         violation: randViol,
-        time: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        time: new Date().toTimeString().split(" ")[0],
         vehicle: randVeh,
-        confidence: Number((0.85 + Math.random() * 0.14).toFixed(2))
+        confidence: 0.85 + Math.random() * 0.12,
       };
 
       setLiveDetections((prev) => [newAlert, ...prev.slice(0, 4)]);
@@ -173,13 +150,28 @@ export default function LiveFeed({ challans, backendStatus }) {
     return () => clearInterval(interval);
   }, []);
 
+  // Helper to dynamically inject dash placeholder when live feed is inactive
+  const getCardValue = (realValue) => {
+    if (isLiveConnected) {
+      return realValue;
+    }
+    return (
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-2xl font-bold text-gray-400">—</span>
+        <span className="text-[9px] text-gray-500 font-normal tracking-normal normal-case mt-1.5 block">
+          Live data will appear here once a camera feed is connected.
+        </span>
+      </span>
+    );
+  };
+
   return (
     <div className="p-8 space-y-8 overflow-y-auto max-h-[calc(100vh-4rem)]">
       {/* Top row metrics cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <MetricsCard
           title="Total Violations Today"
-          value={metrics.violationsToday}
+          value={getCardValue(metrics.violationsToday)}
           changePercentage="+12.4%"
           trend="up"
           icon={ShieldAlert}
@@ -187,7 +179,7 @@ export default function LiveFeed({ challans, backendStatus }) {
         />
         <MetricsCard
           title="Consolidated Fines Issued"
-          value={`₹${metrics.finesIssued.toLocaleString("en-IN")}`}
+          value={getCardValue(`₹${metrics.finesIssued.toLocaleString("en-IN")}`)}
           changePercentage="+8.2%"
           trend="up"
           icon={IndianRupee}
@@ -195,7 +187,7 @@ export default function LiveFeed({ challans, backendStatus }) {
         />
         <MetricsCard
           title="Active Monitoring Cameras"
-          value={`${metrics.activeCameras} / 4`}
+          value={getCardValue(`${metrics.activeCameras} / 4`)}
           changePercentage="100% Online"
           trend="up"
           icon={Video}
@@ -203,7 +195,7 @@ export default function LiveFeed({ challans, backendStatus }) {
         />
         <MetricsCard
           title="Avg Detection Confidence"
-          value={`${metrics.confidenceAvg}%`}
+          value={getCardValue(`${metrics.confidenceAvg}%`)}
           changePercentage="+1.1% accuracy"
           trend="up"
           icon={Cpu}
@@ -273,28 +265,37 @@ export default function LiveFeed({ challans, backendStatus }) {
             </h3>
 
             {/* Scrollable list container */}
-            <div className="space-y-4 overflow-y-auto flex-1 pr-1">
-              {liveDetections.map((item) => (
-                <div
-                  key={item.id}
-                  className="p-4 rounded-xl bg-slate-950/40 border border-gray-800/80 hover:border-red-500/30 hover:bg-slate-950/60 transition-all duration-200 flex flex-col"
-                >
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <span className="text-xs font-bold uppercase tracking-wider text-red-400 px-2 py-0.5 rounded bg-red-500/10">
-                        {item.violation}
-                      </span>
-                      <h4 className="font-bold text-white mt-2 text-sm font-mono">{item.plate}</h4>
-                    </div>
-                    <span className="text-xs font-mono text-gray-500">{item.time}</span>
-                  </div>
-
-                  <div className="mt-3 flex items-center justify-between text-xs text-gray-400 border-t border-gray-800/40 pt-2 font-semibold">
-                    <span>Type: <strong className="text-gray-200">{item.vehicle}</strong></span>
-                    <span>Confidence: <strong className="text-emerald-400">{(item.confidence * 100).toFixed(0)}%</strong></span>
-                  </div>
+            <div className="space-y-4 overflow-y-auto flex-1 pr-1 flex flex-col justify-center">
+              {!isLiveConnected || liveDetections.length === 0 ? (
+                <div className="flex flex-col items-center justify-center text-center p-6 border border-dashed border-gray-800/80 rounded-xl bg-slate-950/20 my-auto">
+                  <span className="text-gray-400 font-medium mb-1.5 text-sm">No Active Incidents</span>
+                  <span className="text-[11px] text-gray-500 font-normal leading-relaxed max-w-[220px]">
+                    Live violations will appear here once the camera feed is connected and detection begins.
+                  </span>
                 </div>
-              ))}
+              ) : (
+                liveDetections.map((item) => (
+                  <div
+                    key={item.id}
+                    className="p-4 rounded-xl bg-slate-950/40 border border-gray-800/80 hover:border-red-500/30 hover:bg-slate-950/60 transition-all duration-200 flex flex-col"
+                  >
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <span className="text-xs font-bold uppercase tracking-wider text-red-400 px-2 py-0.5 rounded bg-red-500/10">
+                          {item.violation}
+                        </span>
+                        <h4 className="font-bold text-white mt-2 text-sm font-mono">{item.plate}</h4>
+                      </div>
+                      <span className="text-xs font-mono text-gray-500">{item.time}</span>
+                    </div>
+
+                    <div className="mt-3 flex items-center justify-between text-xs text-gray-400 border-t border-gray-800/40 pt-2 font-semibold">
+                      <span>Type: <strong className="text-gray-200">{item.vehicle}</strong></span>
+                      <span>Confidence: <strong className="text-emerald-400">{(item.confidence * 100).toFixed(0)}%</strong></span>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>
